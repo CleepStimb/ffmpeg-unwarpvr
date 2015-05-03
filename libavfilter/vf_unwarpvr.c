@@ -134,6 +134,7 @@ typedef struct UnwarpVRContext {
     char *device;
     char *sdkversion;
     int mono_input;
+    int chroma_in;
 
     int* inv_cache;
 } UnwarpVRContext;
@@ -699,6 +700,8 @@ static int config_props(AVFilterLink *outlink)
         int channel;
         int in_linesize;
 
+        const float ChromaticAberrationDisabled[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            
         // Create temporary input frame just so we can get its linesize
         AVFrame* in = ff_get_video_buffer(inlink, inlink->w, inlink->h);
         if (!in) {
@@ -707,6 +710,9 @@ static int config_props(AVFilterLink *outlink)
         }
         in_linesize = in->linesize[0];
         av_frame_free(&in);
+
+        // By default assume chromatic abberation disabled in input
+        memmove(ChromaticAberration, ChromaticAberrationDisabled, sizeof(ChromaticAberration));
 
         if (strcmp(unwarpvr->device, "RiftDK1") == 0) {
             MetersPerTanAngleAtCenter = 0.0425f;
@@ -720,7 +726,8 @@ static int config_props(AVFilterLink *outlink)
                 const float ChromaticAberrationDK1[] = { 0.996f - 1.0f, -0.004f, 1.014f - 1.0f, 0.0f };
                 Eqn = Distortion_Poly4;
                 memmove(K, K_DK1, sizeof(K));
-                memmove(ChromaticAberration, ChromaticAberrationDK1, sizeof(ChromaticAberration));
+                if (unwarpvr->chroma_in)
+                    memmove(ChromaticAberration, ChromaticAberrationDK1, sizeof(ChromaticAberration));
                 MetersPerTanAngleAtCenter = 0.25f * screenWidthMeters; // Ensures TanEyeAngleScaleX = 1.0 to match 0.2.5c behavior
             }
             else if (strcmp(unwarpvr->sdkversion, "0.4.2") == 0) {
@@ -730,7 +737,8 @@ static int config_props(AVFilterLink *outlink)
                 memmove(K, K_DK1, sizeof(K));
                 MaxR = sqrt(1.8f);
                 // ChromaticAbberation does not vary by eye relief in DK1 in SDK 0.4.2
-                memmove(ChromaticAberration, ChromaticAberrationDK1, sizeof(ChromaticAberration));
+                if (unwarpvr->chroma_in)
+                    memmove(ChromaticAberration, ChromaticAberrationDK1, sizeof(ChromaticAberration));
             }
             else {
                 av_log(ctx, AV_LOG_ERROR, "Internal error: unhandled SDK version %s\n", unwarpvr->sdkversion);
@@ -740,12 +748,15 @@ static int config_props(AVFilterLink *outlink)
         else if (strcmp(unwarpvr->device, "RiftDK2") == 0) {
             // Distortion varies by SDK version but never by cup type or eye relief (for DK2 in 0.4.2)
             const float K_DK2[] = { 1.003f, 1.02f, 1.042f, 1.066f, 1.094f, 1.126f, 1.162f, 1.203f, 1.25f, 1.31f, 1.38f };
-            // ChromaticAbberation varies by eye relief and lerps between the following two arrays
-            const float ChromaticAberrationMin[] = { -0.0112f, -0.015f, 0.0187f, 0.015f };
-            const float ChromaticAberrationMax[] = { -0.015f, -0.02f, 0.025f, 0.02f };
             memmove(K, K_DK2, sizeof(K));
-            for (i = 0; i < sizeof(ChromaticAberration) / sizeof(*ChromaticAberration); i++) {
-                ChromaticAberration[i] = ChromaticAberrationMin[i] + unwarpvr->eye_relief_dial / 10.0f * (ChromaticAberrationMax[i] - ChromaticAberrationMin[i]);
+            
+            // ChromaticAbberation varies by eye relief and lerps between the following two arrays
+            if (unwarpvr->chroma_in) {
+                const float ChromaticAberrationMin[] = { -0.0112f, -0.015f, 0.0187f, 0.015f };
+                const float ChromaticAberrationMax[] = { -0.015f, -0.02f, 0.025f, 0.02f };
+                for (i = 0; i < sizeof(ChromaticAberration) / sizeof(*ChromaticAberration); i++) {
+                    ChromaticAberration[i] = ChromaticAberrationMin[i] + unwarpvr->eye_relief_dial / 10.0f * (ChromaticAberrationMax[i] - ChromaticAberrationMin[i]);
+                }
             }
 
             MetersPerTanAngleAtCenter = 0.036f;
@@ -757,10 +768,8 @@ static int config_props(AVFilterLink *outlink)
         else if (strcmp(unwarpvr->device, "GearVRNote4") == 0) {
             // Distortion varies by SDK version but never by cup type or eye relief (for DK2 in 0.4.2)
             const float K_GearVRNote4[] = { 1.003f, 1.02f, 1.042f, 1.066f, 1.094f, 1.126f, 1.162f, 1.203f, 1.25f, 1.31f, 1.38f };
-            // ChromaticAbberation varies by eye relief and lerps between the following two arrays
-            const float ChromaticAberrationGearVRNote4[] = { 0.0f, 0.0f, 0.0f, 0.0f }; // Chromatic abberation correction off by default on Gear VR - TODO: figure it out with it on later
+            // Chromatic abberation correction off by default on Gear VR - TODO: figure it out with it on later
             memmove(K, K_GearVRNote4, sizeof(K));
-            memmove(ChromaticAberration, ChromaticAberrationGearVRNote4, sizeof(ChromaticAberration));
 
             MetersPerTanAngleAtCenter = 0.0341695f; // 0.036f;
             screenWidthMeters = 0.126187f;
@@ -782,10 +791,8 @@ static int config_props(AVFilterLink *outlink)
             
             {
                 const float K_GearVRNote4[] = { 1.0f, 0.0419399f, 0.856239f, 0.0f };
-                const float ChromaticAberrationGearVRNote4[] = { 0.0f, 0.0f, 0.0f, 0.0f }; // Chromatic abberation correction off by default on Gear VR - TODO: figure it out with it on later
                 Eqn = Distortion_Poly4;
                 memmove(K, K_GearVRNote4, sizeof(K));
-                memmove(ChromaticAberration, ChromaticAberrationGearVRNote4, sizeof(ChromaticAberration));
                 MetersPerTanAngleAtCenter = 0.25f * screenWidthMeters; // Ensures TanEyeAngleScaleX = 1.0 to match 0.2.5c behavior
             }
 #endif
@@ -1005,6 +1012,7 @@ static const AVOption unwarpvr_options[] = {
     { "device", "indicates which HMD device was used to record the video", OFFSET(device), AV_OPT_TYPE_STRING, { .str = "RiftDK2" }, .flags = FLAGS },
     { "sdkversion", "indicates what version of the HMD device's SDK was used to record the video", OFFSET(sdkversion), AV_OPT_TYPE_STRING, { .str = "default" }, .flags = FLAGS },
     { "mono_input", "indicates that the input provides only one eye view which should be used for both eyes", OFFSET(mono_input), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, FLAGS },
+    { "chroma_in", "set to zero to indicate that input video has no chromatic abberation correction", OFFSET(chroma_in), AV_OPT_TYPE_INT, { .i64 = 1 }, 0, 1, FLAGS },
     { NULL }
 };
 
