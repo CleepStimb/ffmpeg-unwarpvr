@@ -765,7 +765,7 @@ static int config_props(AVFilterLink *outlink)
             MetersPerTanAngleAtCenter = 0.0341695f; // 0.036f;
             screenWidthMeters = 0.126187f;
             screenHeightMeters = screenWidthMeters / (2560.0f / 1440.0f);
-            LensCenterXOffset = -0.00986003876f;
+            LensCenterXOffset = -5.0f * (screenWidthMeters / 2560.0f); // center shifted 5 pixels to left
             DeviceResX = 2560; DeviceResY = 1440;
 
             // Quad in Unity is 100 m away, 300 m wide. One 8-pixel block in the center has size
