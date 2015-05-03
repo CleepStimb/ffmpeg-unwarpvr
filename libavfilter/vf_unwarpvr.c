@@ -286,10 +286,11 @@ static av_cold int init_dict(AVFilterContext *ctx, AVDictionary **opts)
     int i, j, ret;
 
     char buffer[1024];
-    const char *valid_devices[] = { "RiftDK1", "RiftDK2", NULL };
+    const char *valid_devices[] = { "RiftDK1", "RiftDK2", "GearVRNote4", NULL };
     const char *valid_sdk_versions[][128] = {
         { "0.2.5c", "0.4.2", NULL }, // RiftDK1
         { "0.4.2", NULL }, // RiftDK2
+        { "0.5.0.1", NULL }, // GearVRNote4
     };
     for (i = 0; valid_devices[i] != NULL; i++) {
         if (strcmp(unwarpvr->device, valid_devices[i]) == 0) {
@@ -322,7 +323,7 @@ static av_cold int init_dict(AVFilterContext *ctx, AVDictionary **opts)
         return AVERROR(EINVAL);
     }
 
-    if (unwarpvr->eye_relief_dial == -1)
+    if (unwarpvr->eye_relief_dial == -1 && strncmp(unwarpvr->device, "Rift", strlen("Rift")) == 0)
     {
         int ret = read_ovr_profile(ctx);
         if (ret)
@@ -753,12 +754,48 @@ static int config_props(AVFilterLink *outlink)
             LensCenterXOffset = -0.00986003876f;
             DeviceResX = 1920; DeviceResY = 1080;
         }
+        else if (strcmp(unwarpvr->device, "GearVRNote4") == 0) {
+            // Distortion varies by SDK version but never by cup type or eye relief (for DK2 in 0.4.2)
+            const float K_GearVRNote4[] = { 1.003f, 1.02f, 1.042f, 1.066f, 1.094f, 1.126f, 1.162f, 1.203f, 1.25f, 1.31f, 1.38f };
+            // ChromaticAbberation varies by eye relief and lerps between the following two arrays
+            const float ChromaticAberrationGearVRNote4[] = { 0.0f, 0.0f, 0.0f, 0.0f }; // Chromatic abberation correction off by default on Gear VR - TODO: figure it out with it on later
+            memmove(K, K_GearVRNote4, sizeof(K));
+            memmove(ChromaticAberration, ChromaticAberrationGearVRNote4, sizeof(ChromaticAberration));
+
+            MetersPerTanAngleAtCenter = 0.0341695f; // 0.036f;
+            screenWidthMeters = 0.126187f;
+            screenHeightMeters = screenWidthMeters / (2560.0f / 1440.0f);
+            LensCenterXOffset = -0.00986003876f;
+            DeviceResX = 2560; DeviceResY = 1440;
+
+            // Quad in Unity is 100 m away, 300 m wide. One 8-pixel block in the center has size
+            // 8.76 pixels on screen. Quad is 2048x2048. So 8-pixel block is 8/2048*300 = 1.171875 m wide.
+            // arctan(1.171875 / 100) = 0.6714 degrees. Screen is 2560 pixels and 0.126187 m wide, so
+            // 8.76 pixels is 8.76/2560*0.126187 = 0.000431796 m, yielding 0.000643128 PPD.
+            // Times 53.1301 (see below) gives: 0.0341695
+#if 0
+            MetersPerTanAngleAtCenter = 0.0341695f;
+            screenWidthMeters = 0.126187f;
+            screenHeightMeters = screenWidthMeters / (2560.0f / 1440.0f);
+            LensCenterXOffset = -5.0f * (screenWidthMeters / 2560.0f); // center shifted 5 pixels to left
+            DeviceResX = 2560; DeviceResY = 1440;
+            
+            {
+                const float K_GearVRNote4[] = { 1.0f, 0.0419399f, 0.856239f, 0.0f };
+                const float ChromaticAberrationGearVRNote4[] = { 0.0f, 0.0f, 0.0f, 0.0f }; // Chromatic abberation correction off by default on Gear VR - TODO: figure it out with it on later
+                Eqn = Distortion_Poly4;
+                memmove(K, K_GearVRNote4, sizeof(K));
+                memmove(ChromaticAberration, ChromaticAberrationGearVRNote4, sizeof(ChromaticAberration));
+                MetersPerTanAngleAtCenter = 0.25f * screenWidthMeters; // Ensures TanEyeAngleScaleX = 1.0 to match 0.2.5c behavior
+            }
+#endif
+        }
         else {
             av_log(ctx, AV_LOG_ERROR,
-                "Invalid device specified. Valid options: RiftDK1, RiftDK2\n");
+                "Invalid device specified. Valid options: RiftDK1, RiftDK2, GearVRNote4\n");
             return AVERROR(EINVAL);
         }
-
+        
         DevicePPDInCenterX = MetersPerTanAngleAtCenter / screenWidthMeters * DeviceResX;
         DevicePPDInCenterY = MetersPerTanAngleAtCenter / screenHeightMeters * DeviceResY;
 
